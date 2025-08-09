@@ -38,22 +38,22 @@ export default class TreeComponent extends Vue {
       case 'number': return '#2e7d32';
       case 'boolean': return '#0d47a1';
       case 'null': return '#6b7280';
-      case 'meta': return '#e67e22';
-      default: return '#007fd4';
+      case 'meta': return '#2a2afe';
+      default: return '#dc143c';
     }
   }
 
   private nodeFill(d: any): string {
-    if (d.data.type === 'array') return '#f0f7ff';
-    if (d.data.type === 'object') return '#f7f7ff';
-    if (d.data.type === 'grouped-primitives') return '#ffffff';
+    if (d.data.type === 'array') return '#f6f8fa';
+    if (d.data.type === 'object') return '#f6f8fa';
+    if (d.data.type === 'grouped-primitives') return '#f6f8fa';
     return '#ffffff';
   }
 
   private nodeStroke(d: any): string {
-    if (d.data.type === 'array') return '#90caf9';
-    if (d.data.type === 'object') return '#c5cae9';
-    return '#e5e7eb';
+    if (d.data.type === 'array') return '#485872';
+    if (d.data.type === 'object') return '#475872';
+    return '#475872';
   }
 
   mounted() {
@@ -200,7 +200,7 @@ export default class TreeComponent extends Vue {
         this.updateVisibility();
       })
       .on('mouseover', (event: any) => { d3.select(event.currentTarget).select('rect').attr('stroke', '#007fd4'); })
-      .on('mouseout', (event: any) => { d3.select(event.currentTarget).select('rect').attr('stroke', '#e5e7eb'); });
+      .on('mouseout', (event: any) => { d3.select(event.currentTarget).select('rect').attr('stroke', '#475872'); });
 
     this.nodesSel.append('rect')
       .attr('width', (d: any) => d.data._nodeWidth)
@@ -234,7 +234,7 @@ export default class TreeComponent extends Vue {
             el.append('tspan')
               .attr('x', 10)
               .attr('dy', idx === 0 ? 0 : d.data._lineHeight)
-              .attr('fill', '#007fd4')
+              .attr('fill', '#dc143c')
               .attr('font-weight', 'normal')
               .text(keyVal[0] + ':');
             el.append('tspan')
@@ -275,7 +275,7 @@ export default class TreeComponent extends Vue {
         const ty = (this.ch - treeHeight * scale) / 2 - minY * scale;
         const transform = (d3 as any).zoomIdentity.translate(tx, ty).scale(scale);
         this.currentTransform = transform;
-        svg.transition().duration(300).call((this.zoomBehavior as any).transform, transform);
+        svg.call((this.zoomBehavior as any).transform, transform);
       }
       this.updateVisibility();
     });
