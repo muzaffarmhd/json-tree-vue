@@ -24,7 +24,8 @@ export function jsonToTree(key: string, value: any, isRoot = false): TreeNodeDat
       if (isObjectLike(v) || Array.isArray(v)) {
         nonPrimitives.push(jsonToTree(k, v, false));
       } else {
-        primitives.push({ key: k, value: v, type: typeof v });
+        const t = v === null ? 'null' : typeof v;
+        primitives.push({ key: k, value: v, type: t });
       }
     });
 

@@ -17,10 +17,36 @@ export default class TreeComponent extends Vue {
   @Prop({ type: Number, default: () => window.innerHeight }) readonly height!: number;
 
   private durationMs = 300;
+  private f: any = flextree<any>({ children: (d: any) => d.children });
+  private root: any = null;
+
+  private colorForType(t: string): string {
+    switch (t) {
+      case 'string': return '#6f42c1'; // purple for strings
+      case 'number': return '#2e7d32'; // green for numbers
+      case 'boolean': return '#0d47a1'; // blue for booleans
+      case 'null': return '#6b7280'; // gray for null
+      case 'meta': return '#e67e22'; // orange for labels like object/array
+      default: return '#007fd4'; // fallback blue
+    }
+  }
+
+  private nodeFill(d: any): string {
+    if (d.data.type === 'array') return '#f0f7ff';
+    if (d.data.type === 'object') return '#f7f7ff';
+    if (d.data.type === 'grouped-primitives') return '#ffffff';
+    return '#ffffff';
+  }
+
+  private nodeStroke(d: any): string {
+    if (d.data.type === 'array') return '#90caf9';
+    if (d.data.type === 'object') return '#c5cae9';
+    return '#e5e7eb';
+  }
 
   mounted() {
     window.addEventListener('resize', this.onResize, { passive: true } as AddEventListenerOptions);
-    this.drawTree();
+    this.rebuildAndRender();
   }
 
   beforeDestroy() {
@@ -29,43 +55,36 @@ export default class TreeComponent extends Vue {
 
   @Watch('data', { deep: true })
   onDataChanged() {
-    this.drawTree();
+    this.rebuildAndRender();
   }
 
   private onResize = () => {
     (this as any).$forceUpdate();
-    this.drawTree();
+    this.layoutAndRender();
   };
 
-  private drawTree() {
-    const treeData: TreeNodeData = jsonToTree('root', this.data, true);
-
-    // Build flextree hierarchy so we can compute sizes stored on node.data
-    const f = flextree<any>({
-      children: (d: any) => d.children
-    });
-    const root = f.hierarchy(treeData as any);
-
-    // Precompute text lines and node dimensions
+  private computeSizes(root: any) {
     const getTextLines = (d: any) => {
       if (d.type === 'grouped-primitives') {
-        return d.primitives.map((p: any) => `${p.key}: ${JSON.stringify(p.value)}`);
+        return d.primitives.map((p: any) => `${p.key}: ${JSON.stringify(p.value)}::${p.type}`);
       } else if (d.type === 'array') {
         const count = Array.isArray(d.children) ? d.children.length : 0;
-        return [`${d.key} [${count}]`];
+        return [`${d.key} [${count}]::meta`];
       } else if (d.type === 'object') {
         const count = Array.isArray(d.children) ? d.children.length : 0;
-        return [`${d.key} {${count}}`];
+        return [`${d.key} {${count}}::meta`];
       } else {
-        return [`${d.key}: ${JSON.stringify((d as any).value)}`];
+        // primitive node (rare since we group primitives, but keep handling)
+        const typeHint = (d as any).value === null ? 'null' : typeof (d as any).value;
+        return [`${d.key}: ${JSON.stringify((d as any).value)}::${typeHint}`];
       }
     };
 
-    const estimateTextWidth = (text: string, fontSize = 15) => text.length * fontSize * 0.62 + 28;
+    const estimateTextWidth = (text: string, fontSize = 15) => text.replace(/::.+$/, '').length * fontSize * 0.62 + 28;
 
     root.each((n: any) => {
       const lines = getTextLines(n.data);
-      n.data._nodeLines = lines;
+      n.data._nodeLines = lines; // each line has format: "text::type"
       const lineHeight = 18;
       const verticalPad = 10;
       n.data._nodeHeight = Math.max(32, lines.length * lineHeight + verticalPad * 2);
@@ -73,19 +92,31 @@ export default class TreeComponent extends Vue {
       n.data._lineHeight = lineHeight;
       n.data._verticalPad = verticalPad;
     });
+  }
 
-    // Configure flextree for non-overlapping layout with consistent gaps
-    const verticalGap = 20;   // space between nodes on the same level (stacked vertically)
-    const horizontalGap = 80; // space between parent and child columns
-    f.nodeSize((node: any) => [node.data._nodeHeight + verticalGap, node.data._nodeWidth + horizontalGap]);
+  private rebuildAndRender() {
+    const treeData: TreeNodeData = jsonToTree('root', this.data, true);
+    this.root = this.f.hierarchy(treeData as any);
+    this.computeSizes(this.root);
+    this.layoutAndRender();
+  }
 
-    // Compute layout
-    f(root);
+  private layoutAndRender() {
+    if (!this.root) return;
 
+    const verticalGap = 20;
+    const horizontalGap = 80;
+    this.f.nodeSize((node: any) => [node.data._nodeHeight + verticalGap, node.data._nodeWidth + horizontalGap]);
+    this.f(this.root);
+
+    this.renderGraph();
+  }
+
+  private renderGraph() {
+    const root = this.root;
     const nodes = root.descendants();
     const links = root.links();
 
-    // Clear and render
     const svg = d3.select(this.$refs.svg as any);
     svg.selectAll('*').remove();
 
@@ -108,8 +139,8 @@ export default class TreeComponent extends Vue {
       .attr('d', (d: any) => {
         const sy = d.source.x;
         const ty = d.target.x;
-        const startX = d.source.y + d.source.data._nodeWidth; // right edge of source rect
-        const endX = d.target.y; // left edge of target rect
+        const startX = d.source.y + d.source.data._nodeWidth;
+        const endX = d.target.y;
         const midX = (startX + endX) / 2;
         return `M${startX},${sy} C${midX},${sy} ${midX},${ty} ${endX},${ty}`;
       })
@@ -132,7 +163,7 @@ export default class TreeComponent extends Vue {
           d.children = d._children;
           d._children = null;
         }
-        this.drawTree();
+        this.layoutAndRender();
       })
       .on('mouseover', (event: any) => { d3.select(event.currentTarget).select('rect').attr('stroke', '#007fd4'); })
       .on('mouseout', (event: any) => { d3.select(event.currentTarget).select('rect').attr('stroke', '#e5e7eb'); });
@@ -143,8 +174,8 @@ export default class TreeComponent extends Vue {
       .attr('x', 0)
       .attr('y', (d: any) => -d.data._nodeHeight / 2)
       .attr('rx', 8)
-      .attr('fill', '#fff')
-      .attr('stroke', '#e5e7eb')
+      .attr('fill', (d: any) => this.nodeFill(d))
+      .attr('stroke', (d: any) => this.nodeStroke(d))
       .attr('stroke-width', 1.33333)
       .attr('style', 'box-sizing: border-box; transition: stroke 0.1s ease-in-out;')
       .attr('opacity', 0)
@@ -159,28 +190,30 @@ export default class TreeComponent extends Vue {
       .attr('font-family', 'monospace')
       .attr('font-weight', 'normal')
       .html(null as any)
-      .each(function(this: SVGTextElement, d: any) {
-        const el = d3.select(this);
+      .each((d: any, i: number, nodesEls: any[]) => {
+        const el = d3.select(nodesEls[i] as SVGTextElement);
+        el.selectAll('*').remove();
         d.data._nodeLines.forEach((line: string, idx: number) => {
-          const keyVal = line.split(/:(.+)/);
+          const [text, typeHint] = line.split('::');
+          const keyVal = text.split(/:(.+)/);
           if (keyVal.length === 3) {
             el.append('tspan')
-              .attr('x', (d3.select(this as any).attr('x') as any))
+              .attr('x', 10)
               .attr('dy', idx === 0 ? 0 : d.data._lineHeight)
               .attr('fill', '#007fd4')
               .attr('font-weight', 'normal')
               .text(keyVal[0] + ':');
             el.append('tspan')
-              .attr('fill', '#e65100')
+              .attr('fill', this.colorForType(typeHint || 'string'))
               .attr('font-weight', 'normal')
               .text(keyVal[1]);
           } else {
             el.append('tspan')
-              .attr('x', (d3.select(this as any).attr('x') as any))
+              .attr('x', 10)
               .attr('dy', idx === 0 ? 0 : d.data._lineHeight)
-              .attr('fill', '#007fd4')
+              .attr('fill', this.colorForType(typeHint || 'string'))
               .attr('font-weight', 'normal')
-              .text(line);
+              .text(text);
           }
         });
       });
