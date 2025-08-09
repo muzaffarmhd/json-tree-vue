@@ -8,3 +8,10 @@ declare module 'd3-flextree' {
 }
 
 declare module 'd3';
+
+declare module '@monaco-editor/loader' {
+  const loader: {
+    init: () => Promise<any>;
+  };
+  export default loader;
+}
