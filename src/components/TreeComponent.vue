@@ -1,313 +1,314 @@
 <template>
-  <div class="tree-root" ref="container">
-    <svg ref="svg" :width="cw" :height="ch"></svg>
+  <div class="json-tree-container">
+    <div ref="chartContainer" class="chart-container" :style="{ width: width, height: height }"></div>
   </div>
 </template>
 
 <script lang="ts">
-import { Component, Prop, Vue, Watch } from 'vue-property-decorator';
-import * as d3 from 'd3';
-import { flextree } from 'd3-flextree';
-import { jsonToTree, TreeNodeData } from '@/utils/jsonToTree';
+import { Component, Prop, Vue, Watch } from 'vue-property-decorator'
+import * as echarts from 'echarts'
 
-@Component({ name: 'TreeComponent' })
+@Component({
+  name: 'JsonTreeVisualizer'
+})
 export default class TreeComponent extends Vue {
-  @Prop({ required: true, type: Object }) readonly data!: any;
+  @Prop({ required: true }) readonly data!: object | any[]
+  @Prop({ default: '100%' }) readonly width!: string
+  @Prop({ default: '900px' }) readonly height!: string
 
-  private durationMs = 300;
-  private f: any = flextree<any>({ children: (d: any) => d.children });
-  private root: any = null;
-
-  // container-driven sizing
-  private cw: number = 800;
-  private ch: number = 600;
-  private ro: ResizeObserver | null = null;
-
-  // zoom persistence
-  private zoomBehavior: any = null;
-  private currentTransform: any = null;
-
-  // persistent selections
-  private gRoot: any = null;
-  private linksSel: any = null;
-  private nodesSel: any = null;
-
-  private colorForType(t: string): string {
-    switch (t) {
-      case 'string': return '#6f42c1';
-      case 'number': return '#2e7d32';
-      case 'boolean': return '#0d47a1';
-      case 'null': return '#6b7280';
-      case 'meta': return '#2a2afe';
-      default: return '#dc143c';
-    }
-  }
-
-  private nodeFill(d: any): string {
-    if (d.data.type === 'array') return '#f6f8fa';
-    if (d.data.type === 'object') return '#f6f8fa';
-    if (d.data.type === 'grouped-primitives') return '#f6f8fa';
-    return '#ffffff';
-  }
-
-  private nodeStroke(d: any): string {
-    if (d.data.type === 'array') return '#485872';
-    if (d.data.type === 'object') return '#475872';
-    return '#475872';
-  }
+  private chart: echarts.ECharts | null = null
 
   mounted() {
-    window.addEventListener('resize', this.onResize, { passive: true } as AddEventListenerOptions);
-    this.measure();
-    if ('ResizeObserver' in window) {
-      this.ro = new ResizeObserver(() => {
-        this.measure();
-        this.layoutAndRender();
-      });
-      this.ro.observe(this.$refs.container as Element);
-    }
-    this.rebuildAndRender();
+    this.initChart()
+    this.renderTree()
   }
 
   beforeDestroy() {
-    window.removeEventListener('resize', this.onResize);
-    if (this.ro) {
-      this.ro.disconnect();
-      this.ro = null;
+    if (this.chart) {
+      this.chart.dispose()
     }
   }
 
   @Watch('data', { deep: true })
-  onDataChanged() {
-    this.rebuildAndRender();
+  onDataChange() {
+    this.renderTree()
   }
 
-  private onResize = () => {
-    this.measure();
-    this.layoutAndRender();
-  };
+  private initChart() {
+    this.chart = echarts.init(this.$refs.chartContainer as HTMLElement)
+    window.addEventListener('resize', () => {
+      if (this.chart) this.chart.resize()
+    })
+  }
 
-  private measure() {
-    const el = this.$refs.container as HTMLElement | undefined;
-    if (el) {
-      this.cw = el.clientWidth || this.cw;
-      this.ch = el.clientHeight || this.ch;
+  // ---------- Helpers ----------
+  private valueType(v: any): string {
+    if (v === null) return 'null'
+    if (Array.isArray(v)) return 'array'
+    if (typeof v === 'object') return 'object'
+    return typeof v // string | number | boolean | undefined
+  }
+
+  private keyBadge(text: string): string {
+    return `{key|${text}}`
+  }
+
+  private typeBadge(text: string): string {
+    return `{meta|${text}}`
+  }
+
+  private valBadge(v: any): string {
+    const t = this.valueType(v)
+    if (t === 'string') return `{string|"${v}"}`
+    if (t === 'number') return `{number|${String(v)}}`
+    if (t === 'boolean') return `{boolean|${String(v)}}`
+    if (t === 'null') return `{null|null}`
+    if (t === 'undefined') return `{null|undefined}`
+    if (t === 'array') return `{meta|Array[${v.length}]}`
+    if (t === 'object') return `{meta|Object{${Object.keys(v).length}}}`
+    return `{meta|${String(v)}}`
+  }
+
+  // Convert JSON -> ECharts Tree nodes enriched with key/type/value
+  private convertJsonToTreeData(value: any, key: string = 'root', path: string = ''): any {
+    const id = path || key
+    const t = this.valueType(value)
+
+    const node: any = {
+      id,
+      key,
+      vtype: t,
+      raw: value,
+      name: '',
+      // card background color per type
+      itemStyle: { color: this.colorForType(t), borderColor: '#cbd5e1', borderWidth: 1, borderRadius: 8 },
+      label: { color: '#1f2937', fontSize: 12 }
+    }
+
+    // title text like payload {4}, readings [3], foo: "bar"
+    if (t === 'object') {
+      const c = Object.keys(value).length
+      node.name = `${this.keyBadge(key)} ${this.typeBadge('{' + c + '}')}`
+    } else if (t === 'array') {
+      node.name = `${this.keyBadge(key)} ${this.typeBadge('[' + value.length + ']')}`
     } else {
-      this.cw = window.innerWidth;
-      this.ch = window.innerHeight;
+      node.name = `${this.keyBadge(key)}: ${this.valBadge(value)}`
+    }
+
+    // children with grouped primitives
+    if (t === 'object') {
+      const entries = Object.entries(value)
+      const primitiveObject: any = {}
+      const nonPrimitiveChildren: any[] = []
+      entries.forEach(([k, v]) => {
+        const vt = this.valueType(v)
+        if (vt === 'object' || vt === 'array') {
+          nonPrimitiveChildren.push(this.convertJsonToTreeData(v, k, `${path}.${k}`))
+        } else {
+          primitiveObject[k] = v
+        }
+      })
+      const children: any[] = []
+      const primitiveKeys = Object.keys(primitiveObject)
+      if (primitiveKeys.length > 0) {
+        children.push({
+          id: path || key, // Use parent's path instead of adding __primitives
+          key: '(primitives)',
+          vtype: 'group',
+          raw: primitiveObject,
+          name: primitiveKeys.map(k => `${this.keyBadge(k)}: ${this.valBadge(primitiveObject[k])}`).join('\n'),
+          itemStyle: { color: this.colorForType('group'), borderColor: '#cbd5e1', borderWidth: 1, borderRadius: 8 },
+          label: { color: '#1f2937', fontSize: 12 }
+        })
+      }
+      children.push(...nonPrimitiveChildren)
+      if (children.length > 0) node.children = children
+    } else if (t === 'array') {
+      const primitiveArray: any[] = []
+      const complexChildren: any[] = []
+      value.forEach((v: any, i: number) => {
+        const vt = this.valueType(v)
+        if (vt === 'object' || vt === 'array') {
+          complexChildren.push(this.convertJsonToTreeData(v, String(i), `${path}.${i}`))
+        } else {
+          primitiveArray.push({ index: i, value: v })
+        }
+      })
+      const children: any[] = []
+      if (primitiveArray.length > 0) {
+        children.push({
+          id: path || key, // Use parent's path instead of adding __primitives
+          key: '(primitives)',
+          vtype: 'group',
+          raw: primitiveArray.map(p => p.value),
+          name: primitiveArray.map(p => `${this.keyBadge(String(p.index))}: ${this.valBadge(p.value)}`).join('\n'),
+          itemStyle: { color: this.colorForType('group'), borderColor: '#cbd5e1', borderWidth: 1, borderRadius: 8 },
+          label: { color: '#1f2937', fontSize: 12 }
+        })
+      }
+      children.push(...complexChildren)
+      if (children.length > 0) node.children = children
+    }
+
+    return node
+  }
+
+  private colorForType(t: string): string {
+    switch (t) {
+      case 'object': return '#eef2ff'
+      case 'array': return '#e0f2fe'
+      case 'string': return '#ecfccb'
+      case 'number': return '#fef3c7'
+      case 'boolean': return '#dcfce7'
+      case 'null': return '#f1f5f9'
+      case 'group': return '#e7f3ff'
+      default: return '#ffffff'
     }
   }
 
-  private computeSizes(root: any) {
-    const getTextLines = (d: any) => {
-      if (d.type === 'grouped-primitives') {
-        return d.primitives.map((p: any) => `${p.key}: ${JSON.stringify(p.value)}::${p.type}`);
-      } else if (d.type === 'array') {
-        const count = Array.isArray(d.children) ? d.children.length : 0;
-        return [`${d.key} [${count}]::meta`];
-      } else if (d.type === 'object') {
-        const count = Array.isArray(d.children) ? d.children.length : 0;
-        return [`${d.key} {${count}}::meta`];
-      } else {
-        const typeHint = (d as any).value === null ? 'null' : typeof (d as any).value;
-        return [`${d.key}: ${JSON.stringify((d as any).value)}::${typeHint}`];
-      }
-    };
+  private renderTree() {
+    if (!this.chart || this.data == null) return
 
-    const estimateTextWidth = (text: string, fontSize = 15) => text.replace(/::.+$/, '').length * fontSize * 0.62 + 28;
+    const treeData = this.convertJsonToTreeData(this.data, 'root')
 
-    root.each((n: any) => {
-      const lines = getTextLines(n.data);
-      n.data._nodeLines = lines;
-      const lineHeight = 18;
-      const verticalPad = 10;
-      n.data._nodeHeight = Math.max(32, lines.length * lineHeight + verticalPad * 2);
-      n.data._nodeWidth = Math.max(150, Math.max(...lines.map((l: string) => estimateTextWidth(l))));
-      n.data._lineHeight = lineHeight;
-      n.data._verticalPad = verticalPad;
-    });
-  }
+    const rich = {
+      key: { color: '#2563eb', fontWeight: 'bold' },
+      string: { color: '#7c3aed' },
+      number: { color: '#065f46' },
+      boolean: { color: '#0d9488' },
+      null: { color: '#6b7280' },
+      meta: { color: '#1f2937' }
+    }
 
-  private rebuildAndRender() {
-    const treeData: TreeNodeData = jsonToTree('root', this.data, true);
-    this.root = this.f.hierarchy(treeData as any);
-    this.computeSizes(this.root);
-    this.layoutAndRender();
-  }
-
-  private layoutAndRender() {
-    if (!this.root) return;
-
-    const verticalGap = 20;
-    const horizontalGap = 80;
-    this.f.nodeSize((node: any) => [node.data._nodeHeight + verticalGap, node.data._nodeWidth + horizontalGap]);
-    this.f(this.root);
-
-    this.renderGraph();
-  }
-
-  private renderGraph() {
-    const root = this.root;
-    const nodes = root.descendants();
-    const links = root.links();
-
-    const svg = d3.select(this.$refs.svg as any);
-    svg.selectAll('*').remove();
-
-    const g = svg.append('g');
-    this.gRoot = g;
-    const zoom = d3.zoom().scaleExtent([0.1, 3]).on('zoom', (event: any) => {
-      g.attr('transform', event.transform);
-      this.currentTransform = event.transform;
-    });
-    svg.call(zoom as any);
-    this.zoomBehavior = zoom;
-
-    const t = d3.transition().duration(this.durationMs);
-
-    const linksBase = g.append('g')
-      .attr('stroke', '#475872')
-      .attr('stroke-width', 1.33333)
-      .selectAll('path.link')
-      .data(links)
-      .enter()
-      .append('path')
-      .attr('class', 'link')
-      .attr('fill', 'none')
-      .attr('d', (d: any) => {
-        const sy = d.source.x;
-        const ty = d.target.x;
-        const startX = d.source.y + d.source.data._nodeWidth;
-        const endX = d.target.y;
-        const midX = (startX + endX) / 2;
-        return `M${startX},${sy} C${midX},${sy} ${midX},${ty} ${endX},${ty}`;
-      })
-      .attr('opacity', 0);
-    linksBase.transition(t).attr('opacity', 1);
-    this.linksSel = linksBase;
-
-    this.nodesSel = g.append('g')
-      .selectAll('g.node')
-      .data(nodes)
-      .enter()
-      .append('g')
-      .attr('class', 'node')
-      .attr('transform', (d: any) => `translate(${d.y},${d.x})`)
-      .style('cursor', (d: any) => (d.children && d.children.length > 0) ? 'pointer' : 'default')
-      .on('click', (event: any, d: any) => {
-        if (!(d.children && d.children.length > 0)) return;
-        d.data._collapsed = !d.data._collapsed;
-        this.updateVisibility();
-      })
-      .on('mouseover', (event: any) => { d3.select(event.currentTarget).select('rect').attr('stroke', '#007fd4'); })
-      .on('mouseout', (event: any) => { d3.select(event.currentTarget).select('rect').attr('stroke', '#475872'); });
-
-    this.nodesSel.append('rect')
-      .attr('width', (d: any) => d.data._nodeWidth)
-      .attr('height', (d: any) => d.data._nodeHeight)
-      .attr('x', 0)
-      .attr('y', (d: any) => -d.data._nodeHeight / 2)
-      .attr('rx', 8)
-      .attr('fill', (d: any) => this.nodeFill(d))
-      .attr('stroke', (d: any) => this.nodeStroke(d))
-      .attr('stroke-width', 1.33333)
-      .attr('style', 'box-sizing: border-box; transition: stroke 0.1s ease-in-out;')
-      .attr('opacity', 0)
-      .transition(t)
-      .attr('opacity', 1);
-
-    this.nodesSel.append('text')
-      .attr('text-anchor', 'start')
-      .attr('x', 10)
-      .attr('y', (d: any) => -d.data._nodeHeight / 2 + d.data._verticalPad + d.data._lineHeight - 3)
-      .attr('font-size', 15)
-      .attr('font-family', 'monospace')
-      .attr('font-weight', 'normal')
-      .html(null as any)
-      .each((d: any, i: number, nodesEls: any[]) => {
-        const el = d3.select(nodesEls[i] as SVGTextElement);
-        el.selectAll('*').remove();
-        d.data._nodeLines.forEach((line: string, idx: number) => {
-          const [text, typeHint] = line.split('::');
-          const keyVal = text.split(/:(.+)/);
-          if (keyVal.length === 3) {
-            el.append('tspan')
-              .attr('x', 10)
-              .attr('dy', idx === 0 ? 0 : d.data._lineHeight)
-              .attr('fill', '#dc143c')
-              .attr('font-weight', 'normal')
-              .text(keyVal[0] + ':');
-            el.append('tspan')
-              .attr('fill', this.colorForType(typeHint || 'string'))
-              .attr('font-weight', 'normal')
-              .text(keyVal[1]);
-          } else {
-            el.append('tspan')
-              .attr('x', 10)
-              .attr('dy', idx === 0 ? 0 : d.data._lineHeight)
-              .attr('fill', this.colorForType(typeHint || 'string'))
-              .attr('font-weight', 'normal')
-              .text(text);
+    const option = {
+      tooltip: {
+        trigger: 'item',
+        triggerOn: 'mousemove',
+        confine: true,
+        backgroundColor: 'rgba(255, 255, 255, 0.95)',
+        borderColor: '#cbd5e1',
+        borderWidth: 1,
+        textStyle: { color: '#1f2937', fontSize: 12 },
+        formatter: (params: any) => {
+          const data = params.data
+          
+          const lines: string[] = []
+          lines.push(`<div style="font-weight: bold; color: #2563eb; margin-bottom: 4px;">${data.id}</div>`)
+          lines.push(`<div style="color: #6b7280; font-size: 11px;">Type: ${data.vtype}</div>`)
+          const childCount = data.children ? data.children.length : 0
+          lines.push(`<div style="color: #059669; margin-top: 2px;">Children: ${childCount}</div>`)
+          
+          return `<div style="max-width: 320px; line-height: 1.4;">${lines.join('')}</div>`
+        }
+      },
+      animationDuration: 300,
+      // Add zoom and pan controls
+      dataZoom: [
+        {
+          type: 'inside',
+          orient: 'horizontal',
+          start: 0,
+          end: 100,
+          zoomLock: false
+        },
+        {
+          type: 'inside',
+          orient: 'vertical',
+          start: 0,
+          end: 100,
+          zoomLock: false
+        }
+      ],
+      // Add toolbox for zoom controls
+      toolbox: {
+        feature: {
+          dataZoom: {
+            yAxisIndex: 'none'
+          },
+          restore: {},
+          saveAsImage: {}
+        }
+      },
+      series: [
+        {
+          type: 'tree',
+          data: [treeData],
+          top: '8%',
+          left: '8%',
+          bottom: '8%',
+          right: '8%',
+          orient: 'LR',
+          expandAndCollapse: true,
+          initialTreeDepth: -1,
+          symbolSize: 10,
+          lineStyle: { width: 1.5, color: '#94a3b8' },
+          edgeShape: 'curve',
+          edgeForkPosition: '60%',
+          // Set initial zoom to fit content
+          roam: true,
+          scaleLimit: {
+            min: 0.1,
+            max: 3
+          },
+          label: {
+            position: 'left',
+            align: 'right',
+            verticalAlign: 'middle',
+            fontFamily: 'monospace',
+            backgroundColor: '#ffffff',
+            borderColor: '#cbd5e1',
+            borderWidth: 1,
+            borderRadius: 8,
+            padding: [6, 8],
+            rich,
+            formatter: (params: any) => params.data.name
+          },
+          leaves: {
+            label: {
+              position: 'right',
+              align: 'left',
+              verticalAlign: 'middle',
+              backgroundColor: '#ffffff',
+              borderColor: '#cbd5e1',
+              borderWidth: 1,
+              borderRadius: 8,
+              padding: [6, 8],
+              rich,
+              formatter: (params: any) => params.data.name
+            }
+          },
+          emphasis: {
+            focus: 'descendant'
           }
-        });
-      });
-
-    // Apply initial transform and visibility
-    this.$nextTick(() => {
-      if (this.currentTransform) {
-        svg.call((this.zoomBehavior as any).transform, this.currentTransform);
-      } else {
-        type Box = { x: number; y: number; width: number; height: number };
-        const nodeBoxes: Box[] = nodes.map((d: any): Box => ({
-          x: d.y,
-          y: d.x - d.data._nodeHeight / 2,
-          width: d.data._nodeWidth,
-          height: d.data._nodeHeight
-        }));
-        const minX = Math.min(...nodeBoxes.map((b: Box) => b.x));
-        const maxX = Math.max(...nodeBoxes.map((b: Box) => b.x + b.width));
-        const minY = Math.min(...nodeBoxes.map((b: Box) => b.y));
-        const maxY = Math.max(...nodeBoxes.map((b: Box) => b.y + b.height));
-        const treeWidth = Math.max(1, maxX - minX);
-        const treeHeight = Math.max(1, maxY - minY);
-        const scale = Math.min(0.7 * this.cw / treeWidth, 0.7 * this.ch / treeHeight, 1);
-        const tx = (this.cw - treeWidth * scale) / 2 - minX * scale;
-        const ty = (this.ch - treeHeight * scale) / 2 - minY * scale;
-        const transform = (d3 as any).zoomIdentity.translate(tx, ty).scale(scale);
-        this.currentTransform = transform;
-        svg.call((this.zoomBehavior as any).transform, transform);
-      }
-      this.updateVisibility();
-    });
-  }
-
-  private isHidden(d: any): boolean {
-    let cur = d.parent; // hide descendants when any ancestor is collapsed
-    while (cur) {
-      if (cur.data && cur.data._collapsed) return true;
-      cur = cur.parent;
+        }
+      ]
     }
-    return false;
-  }
 
-  private updateVisibility() {
-    if (!this.nodesSel || !this.linksSel) return;
-    // nodes
-    this.nodesSel.attr('display', (d: any) => (this.isHidden(d) ? 'none' : null));
-    // links -> hide if target is hidden or source is hidden
-    this.linksSel.attr('display', (l: any) => (this.isHidden(l.target) || this.isHidden(l.source) ? 'none' : null));
+    this.chart.setOption(option, true)
+    
+    // Auto-fit the tree to ensure all labels are visible
+    setTimeout(() => {
+      if (this.chart) {
+        this.chart.dispatchAction({
+          type: 'dataZoom',
+          start: 0,
+          end: 100
+        })
+      }
+    }, 100)
   }
 }
 </script>
 
 <style scoped>
-.tree-root {
+.json-tree-container {
   width: 100%;
   height: 100%;
-  display: block;
-  margin: 0;
-  padding: 0;
-  background: #f5f5f5;
+  position: relative;
 }
-svg { display: block; }
+
+.chart-container { 
+  width: 100%; 
+  height: 100%; 
+}
 </style> 
